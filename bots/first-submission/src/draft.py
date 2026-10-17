@@ -6,8 +6,9 @@ wrong we still pick a legal champion: a missed pick is randomised by the game.
 import cambc
 
 D = cambc.ChampionDraft
-PREFERENCE = [D.TAVI, D.MARCELLA, D.VENDETTA, D.REN, D.VESPER_VALE,
-              D.VARG, D.RYTH, D.STELLAR, D.CASSI_AND_ISSAC, D.WILLOW, D.PRISM]
+# Best tested order (docs/EXPERIMENTS.md, variant d4); later entries are only fallbacks.
+PREFERENCE = [D.VENDETTA, D.VARG, D.TAVI, D.MARCELLA, D.STELLAR,
+              D.REN, D.VESPER_VALE, D.RYTH, D.CASSI_AND_ISSAC, D.WILLOW, D.PRISM]
 MEMORY = b"ALPHA_V2"
 
 
