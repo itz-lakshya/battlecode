@@ -23,6 +23,7 @@ class Slot:
         self.exclusive = bool(info.exclusive_with_movement)
         self.modifier = getattr(info, 'modifier', 0.0)
         self.radius = getattr(info, 'radius', 0.0)
+        self.cooldown_inv = 1.0 / max(1, info.max_cooldown)
 
 
 class Kit:
@@ -36,6 +37,14 @@ class Kit:
                 self.slots.append(Slot(ability.slot(), info))
         self.kinds = {s.kind for s in self.slots}
         self.cast_this_turn = False
+
+    def kite_dps(self, me):
+        """Damage per turn from range-4 spells alone (each slot once per cooldown)."""
+        total = 0.0
+        for slot in self.slots:
+            if slot.kind in (DAMAGE, AOE) or (slot.kind == CC and slot.modifier > 0):
+                total += slot.modifier * slot.cooldown_inv
+        return total * me.focus() if total else 0.0
 
     def ready(self, me, kinds):
         """Ready (slot, ability) pairs of the given kinds; empty when we cannot cast."""

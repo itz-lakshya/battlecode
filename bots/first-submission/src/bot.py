@@ -22,13 +22,17 @@ def blocked_tiles():
     return blocked
 
 
-def move_towards_closest(goals, kit=None):
-    """Step (dashing first when that gets closer) towards the nearest goal tile."""
+def move_towards_closest(goals, kit=None, avoid=None):
+    """Step (dashing first when that gets closer) towards the nearest goal tile,
+    never entering avoid tiles."""
     me = cambc.me()
     origin = me.position()
     if not me.can_move() or goals.is_set(origin):
         return False
     blocked = blocked_tiles()
+    if avoid is not None:
+        blocked |= avoid
+        blocked.set(origin, False)
     goals &= ~blocked | cambc.vision.camp_tiles()
     if goals.is_empty():
         return False
@@ -40,6 +44,9 @@ def move_towards_closest(goals, kit=None):
         if goals.is_set(origin) or not me.can_move():
             return True
         blocked = blocked_tiles()   # the dash changed our vision; units may have appeared
+        if avoid is not None:
+            blocked |= avoid
+            blocked.set(origin, False)
     step = min([origin, *blocked.reachable_tiles(origin, 1).positions()], key=field.get)
     return (step != origin and me.move_absolute(step)) or dashed
 
@@ -62,17 +69,18 @@ def basic_attack(me, foes):
     return False
 
 
-def fight(me, kit, foes, goals):
+def fight(me, kit, foes, goals, avoid=None):
     """Spells before moving, basic attack (twice with a reset), otherwise approach."""
     in_reach = any(me.attack_tiles().is_set(f[1]) for f in foes)
-    cast = kit.offensive(me, foes, will_move=goals is not None and not in_reach)
+    will_move = goals is not None and not in_reach and not goals.is_set(me.position())
+    cast = kit.offensive(me, foes, will_move)
     if basic_attack(me, foes):
         if kit.reset_attack(me):
             basic_attack(me, foes)
         return True
     if cast:
         return True
-    if goals is not None and move_towards_closest(goals, kit):
+    if goals is not None and move_towards_closest(goals, kit, avoid):
         kit.offensive(me, foes, will_move=True)
         if basic_attack(me, foes) and kit.reset_attack(me):
             basic_attack(me, foes)
@@ -185,7 +193,7 @@ class Bot:
         if me.gem_count() > 0:
             self.tribute(me)
             return
-        target = self.planner.choose_target()
+        target = self.planner.choose_target(kit.kite_dps(me))
         if target is None:
             return
-        fight(me, kit, self.planner.foes(target), self.planner.goals(target))
+        fight(me, kit, self.planner.foes(target), self.planner.goals(target), self.planner.avoid(target))
