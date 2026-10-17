@@ -166,26 +166,22 @@ class CampPlanner:
             return ring & ~info.tiles
         return info.tiles.copy()
 
-    def attack_target(self, info):
-        """Basic-attack a living camp of the target group: dangerous camps first, then low health."""
-        me = cambc.me()
-        if not me.can_attack():
-            return False
-        tiles = me.attack_tiles()
-        best = None
+    def foes(self, info):
+        """Visible living camps of the group: (camp, position, strength, health, False),
+        dangerous camps first, then lowest health, so kills reduce incoming damage soonest."""
+        out = []
         for p in info.spawns:
-            if not tiles.is_set(p) or not cambc.vision.has_camp(p):
+            if not cambc.vision.has_camp(p):
                 continue
             try:
                 camp = cambc.vision.camp_at(p)
-                if int(camp) not in info.handles or camp.health() <= 0:
+                if int(camp) not in info.handles:
                     continue
-                key = (camp.strength() <= 0, camp.health())
+                hp = camp.health()
+                if hp <= 0:
+                    continue
+                out.append((camp, p, camp.strength(), hp, False))
             except cambc.Error:
                 continue
-            if best is None or key < best[0]:
-                best = (key, camp)
-        if best is None:
-            return False
-        me.attack(best[1])
-        return True
+        out.sort(key=lambda f: (f[2] <= 0, f[3]))
+        return out

@@ -7,6 +7,7 @@ import collections
 import glob
 import json
 import os
+import subprocess
 import sys
 
 D, me = sys.argv[1], sys.argv[2]
@@ -34,6 +35,14 @@ for f in sorted(glob.glob(os.path.join(D, '*.json'))):
     draft = ','.join(c['name'][:4] for c in champs if c['team'] == mine)
     odraft = ','.join(c['name'][:4] for c in champs if c['team'] == opp)
     faults = d['diagnostics']['botFaults'][mine]
+    replay = f[:-5] + '.repl26a'
+    if os.path.exists(replay):
+        out = subprocess.run(['unzip', '-p', replay, 'team-a.stdout' if mine == 'teamA' else 'team-b.stdout'],
+                             capture_output=True).stdout
+        errors = out.count(b'bot error')
+        tot['errors'] += errors
+        if errors:
+            print('  %s: %d bot errors' % (tag, errors))
     rows.append((mapn, side, 'W' if win else 'L', gems[mine], gems[opp], d['match']['roundsStarted'],
                  total(mine, 'deaths'), camp_deaths, total(opp, 'deaths'), total(mine, 'kills'),
                  total(mine, 'collectedGems'), total(mine, 'earnedGold'), faults, draft, odraft))
@@ -52,6 +61,6 @@ for r in rows:
     print('%-12s %s %s %5d %5d %5d %4d %4d %4d %3d %5d %5d %3d  %s | %s' % r)
 n = tot['games']
 if n:
-    print('games=%d wins=%d (%.0f%%) avg gems %.0f vs %.0f, avg deaths %.1f (camp %.1f) vs %.1f, faults %d, fuel exhausted %d' % (
+    print('games=%d wins=%d (%.0f%%) avg gems %.0f vs %.0f, avg deaths %.1f (camp %.1f) vs %.1f, faults %d, fuel exhausted %d, bot errors %d' % (
         n, tot['wins'], 100 * tot['wins'] / n, tot['gems'] / n, tot['ogems'] / n,
-        tot['deaths'] / n, tot['campdeaths'] / n, tot['odeaths'] / n, tot['faults'], tot['fuel_exhausted']))
+        tot['deaths'] / n, tot['campdeaths'] / n, tot['odeaths'] / n, tot['faults'], tot['fuel_exhausted'], tot['errors']))

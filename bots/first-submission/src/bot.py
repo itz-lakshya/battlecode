@@ -1,9 +1,11 @@
-"""First playable Alpha Bot: farm camps, tribute gems, and fight in range."""
+"""Alpha Bot: farm the best camp, bank gems at altars, fight in range, never die needlessly."""
 import cambc
 import survival
+from abilities import Kit
 from camps import CampPlanner
 
 Team, Item = cambc.Team, cambc.ItemType
+ENEMY_SCAN = 4   # spell range: enemies this close are fought before farming
 
 
 def around(position, radius):
@@ -20,7 +22,8 @@ def blocked_tiles():
     return blocked
 
 
-def move_towards_closest(goals):
+def move_towards_closest(goals, kit=None):
+    """Step (dashing first when that gets closer) towards the nearest goal tile."""
     me = cambc.me()
     origin = me.position()
     if not me.can_move() or goals.is_set(origin):
@@ -29,32 +32,67 @@ def move_towards_closest(goals):
     goals &= ~blocked | cambc.vision.camp_tiles()
     if goals.is_empty():
         return False
-    if goals.count() == 1 and not blocked.is_set(goals.positions()[0]):
-        return me.move_towards(goals.positions()[0])
     field = cambc.DistanceField()
     field.compute_to(blocked & ~goals, goals, around(origin, 0), cambc.Bitboard())
-    reachable = blocked.reachable_tiles(origin, me.base_stats().base_move_speed)
-    step = min([origin, *reachable.positions()], key=field.get)
-    return step != origin and me.move_absolute(step)
+    dashed = kit is not None and kit.dash_to(me, field, blocked)
+    if dashed:
+        origin = me.position()
+        if goals.is_set(origin) or not me.can_move():
+            return True
+        blocked = blocked_tiles()   # the dash changed our vision; units may have appeared
+    step = min([origin, *blocked.reachable_tiles(origin, 1).positions()], key=field.get)
+    return (step != origin and me.move_absolute(step)) or dashed
 
 
-def attack_if_in_range(target):
-    me = cambc.me()
-    if (me.can_attack() and target.is_visible() and target.health() > 0
-            and me.attack_tiles().is_set(target.position())):
-        me.attack(target)
+def basic_attack(me, foes):
+    """Attack the highest-priority living foe inside our attack range."""
+    if not foes or not me.can_attack():
+        return False
+    tiles = me.attack_tiles()
+    for unit, position, _, _, _ in foes:
+        if not tiles.is_set(position):
+            continue
+        try:
+            if not unit.is_visible() or unit.health() <= 0:
+                continue
+            me.attack(unit)
+            return True
+        except cambc.Error:
+            continue
+    return False
+
+
+def fight(me, kit, foes, goals):
+    """Spells before moving, basic attack (twice with a reset), otherwise approach."""
+    in_reach = any(me.attack_tiles().is_set(f[1]) for f in foes)
+    cast = kit.offensive(me, foes, will_move=goals is not None and not in_reach)
+    if basic_attack(me, foes):
+        if kit.reset_attack(me):
+            basic_attack(me, foes)
+        return True
+    if cast:
+        return True
+    if goals is not None and move_towards_closest(goals, kit):
+        kit.offensive(me, foes, will_move=True)
+        if basic_attack(me, foes) and kit.reset_attack(me):
+            basic_attack(me, foes)
         return True
     return False
 
 
-def farm_camps(planner):
-    target = planner.choose_target()
-    if target is None:
-        return
-    if planner.attack_target(target):
-        return
-    if move_towards_closest(planner.goals(target)):
-        planner.attack_target(target)
+def enemy_foes(me):
+    """Visible enemy champions within spell range, lowest health first."""
+    out = []
+    tiles = cambc.vision.champion_tiles(Team.ENEMY) & around(me.position(), ENEMY_SCAN)
+    for p in tiles.positions():
+        try:
+            enemy = cambc.vision.champion_at(p)
+            if enemy.is_alive():
+                out.append((enemy, p, enemy.strength(), enemy.health(), True))
+        except cambc.Error:
+            continue
+    out.sort(key=lambda f: f[3])
+    return out
 
 
 class Bot:
@@ -62,6 +100,8 @@ class Bot:
         self.chosen_stat = None
         self.planner = CampPlanner()
         self.retreating = False
+        self.kit = None
+        self.altars = None
 
     def buy_items(self):
         me = cambc.me()
@@ -73,14 +113,50 @@ class Bot:
         if count and me.can_buy(item, count):
             me.buy(item, count)
 
+    def tribute(self, me):
+        """Bank gems at the nearest altar; a locked altar is still usable as a last resort
+        because tributing against a lock attacks it (three hits clear it)."""
+        if self.altars is None:
+            r = cambc.constants.SUBMIT_GEMS_RANGE
+            self.altars = [(a, around(a, r)) for a in cambc.game_map.altars().positions()]
+        origin = me.position()
+        open_goals, locked_goals = cambc.Bitboard(), cambc.Bitboard()
+        for altar, ring in self.altars:
+            locked = cambc.vision.has_altar_lock(altar)
+            if ring.is_set(origin) and not locked:
+                me.submit_gems(altar)
+                return
+            if locked:
+                locked_goals |= ring
+            else:
+                open_goals |= ring
+        if open_goals.is_empty():
+            for altar, ring in self.altars:
+                if ring.is_set(origin):
+                    try:
+                        me.submit_gems(altar)
+                    except cambc.Error:
+                        pass
+                    return
+            open_goals = locked_goals
+        move_towards_closest(open_goals, self.kit)
+
     def play_turn(self):
         me = cambc.me()
-        if me.is_alive():
-            self.planner.observe()
-        if (not me.is_alive() or me.is_recalling() or me.is_submitting_gems() or me.is_teleporting()
+        if not me.is_alive():
+            self.buy_items()   # dead champions may shop
+            return
+        if self.kit is None:
+            self.kit = Kit(me)
+        kit = self.kit
+        kit.cast_this_turn = False
+        self.planner.observe()
+        if (me.is_recalling() or me.is_submitting_gems() or me.is_teleporting()
                 or (not me.can_move() and not me.can_attack())):
             return
+        me.set_priority(100)
         at_spawn = cambc.game_map.spawn_region(Team.ALLY).is_set(me.position())
+        found = []
         if at_spawn:
             self.buy_items()
             if me.health() < me.max_health():
@@ -93,28 +169,23 @@ class Bot:
                 self.retreating = True
             if self.retreating:
                 # Damage cancels a recall, so leave every threat's range first.
+                kit.support(me, True)
                 if not survival.safe_now(me, found):
-                    survival.retreat_step(me, found, blocked_tiles())
+                    survival.retreat_step(me, found, blocked_tiles(), kit)
                 if survival.safe_now(me, found) and survival.try_recall(me):
                     self.retreating = False
                 return
             if not found and me.health() < me.max_health() * survival.RECALL_SAFE:
                 survival.try_recall(me)
                 return
-        for enemy in cambc.vision.champions(Team.ENEMY):
-            if attack_if_in_range(enemy):
-                return
-        if me.gem_count() > 0:
-            goals = cambc.Bitboard()
-            for altar in cambc.game_map.altars().positions():
-                if cambc.vision.has_altar_lock(altar):
-                    continue
-                if me.position().chebyshev_distance(altar) <= cambc.constants.SUBMIT_GEMS_RANGE:
-                    me.submit_gems(altar)
-                    return
-                goals |= around(altar, cambc.constants.SUBMIT_GEMS_RANGE)
-            if not goals.is_empty():
-                move_towards_closest(goals)
+        kit.support(me, bool(found))
+        enemies = enemy_foes(me)
+        if enemies and fight(me, kit, enemies, None):
             return
-        farm_camps(self.planner)
-        me.set_priority(100)
+        if me.gem_count() > 0:
+            self.tribute(me)
+            return
+        target = self.planner.choose_target()
+        if target is None:
+            return
+        fight(me, kit, self.planner.foes(target), self.planner.goals(target))

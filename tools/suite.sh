@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Run BOT vs OPP on every map in maps/, both sides, then print aggregate results.
-# Usage: tools/suite.sh BOT OPP [OUTDIR] [JOBS]   (BOT and OPP are names under bots/)
+# Usage: [RELEASE=1] tools/suite.sh BOT OPP [OUTDIR] [JOBS]   (BOT and OPP are names under bots/)
 set -e
 W=${0:A:h:h}
 BOT=$1; OPP=$2; OUT=${3:-/tmp/cambc_runs/$BOT-vs-$OPP}; JOBS=${4:-6}
@@ -14,5 +14,5 @@ for m in $W/maps/*.map26a; do
   echo "$W/bots/$OPP $W/bots/$BOT $m $OUT/B_$n.repl26a --statistics $OUT/B_$n.json --json" >> $OUT/manifest.txt
 done
 cd $W
-cambc run-batch $OUT/manifest.txt --jobs $JOBS --log-limit 0 --color never > $OUT/batch.log 2>&1 || { tail -5 $OUT/batch.log; exit 1; }
+cambc run-batch $OUT/manifest.txt --jobs $JOBS --color never ${RELEASE:+--release} > $OUT/batch.log 2>&1 || { tail -5 $OUT/batch.log; exit 1; }
 python3 -I $W/tools/agg.py $OUT $BOT

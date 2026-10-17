@@ -66,8 +66,9 @@ def should_retreat(me, found):
     return hp < me.max_health() * LOW_HEALTH or hp <= incoming * (escape_turns(me.position(), found) + 1)
 
 
-def retreat_step(me, found, blocked):
-    """Move to the neighbour farthest from every threat, breaking ties towards our spawn."""
+def retreat_step(me, found, blocked, kit=None):
+    """Move to the neighbour farthest from every threat, breaking ties towards our spawn.
+    Dash first when two tiles gets us meaningfully farther than one."""
     origin = me.position()
     home = game_map.spawn_region(Team.ALLY).positions()[0]
 
@@ -77,9 +78,30 @@ def retreat_step(me, found, blocked):
 
     options = [origin, *blocked.reachable_tiles(origin, 1).positions()]
     best = max(options, key=key)
+    if kit is not None and survival_dash(me, kit, blocked, key, key(best)):
+        origin = me.position()
+        if safe_now(me, found) or not me.can_move():
+            return True
+        blocked = (game_map.walls() | game_map.holes() | game_map.altars()
+                   | game_map.spawn_region(Team.ENEMY) | cambc.vision.champion_tiles()
+                   | cambc.vision.camp_tiles() | cambc.vision.teleport_tiles())
+        blocked.set(origin, False)
+        best = max([origin, *blocked.reachable_tiles(origin, 1).positions()], key=key)
     if best != origin and me.can_move():
         return me.move_absolute(best)
     return False
+
+
+def survival_dash(me, kit, blocked, key, walk_value):
+    from abilities import DASH
+    ready = kit.ready(me, (DASH,))
+    if not ready:
+        return False
+    options = blocked.reachable_tiles(me.position(), 2).positions()
+    if not options:
+        return False
+    best = max(options, key=key)
+    return key(best) > walk_value and kit._use(ready[0][1], best)
 
 
 def safe_now(me, found):
