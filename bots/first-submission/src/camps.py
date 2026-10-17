@@ -17,6 +17,18 @@ RESCORE_INTERVAL = 10      # rounds between re-evaluating a committed target
 SWITCH_MARGIN = 1.3        # a new target must score this much better to switch
 
 
+_KIND_STATS = {}
+
+
+def kind_stats(camp):
+    """(base health, base strength) per camp type; each API call costs fuel, so cache."""
+    kind = int(camp.kind())
+    if kind not in _KIND_STATS:
+        stats = camp.base_stats()
+        _KIND_STATS[kind] = (stats.base_health, stats.base_strength)
+    return _KIND_STATS[kind]
+
+
 class GroupInfo:
     """Static data for one camp group, cached once per match."""
 
@@ -25,10 +37,16 @@ class GroupInfo:
         self.key = int(group)
         self.tiles = group.spawn_tiles()
         self.spawns = self.tiles.positions()
-        self.camps = [(int(c), c.base_stats().base_health, c.base_stats().base_strength)
-                      for c in group.camps()]
+        self.anchor = self.spawns[0]   # groups are compact: one tile is enough for distance
+        self.camps = [(int(c), *kind_stats(c)) for c in group.camps()]
         self.handles = {h for h, _, _ in self.camps}
         self.value = group.gem_value() + GOLD_WEIGHT * group.gold_value()
+        self.hp = sum(hp for _, hp, _ in self.camps)        # remaining, maintained by observe
+        self.dps = sum(st for _, _, st in self.camps)
+
+    def refresh(self, camp_hp):
+        self.hp = sum(camp_hp.get(h, hp) for h, hp, _ in self.camps)
+        self.dps = sum(st for h, _, st in self.camps if camp_hp.get(h, 1) > 0)
 
 
 class CampPlanner:
@@ -77,12 +95,16 @@ class CampPlanner:
                 self.respawn_round[info.key] = now + max(1, state.timer)
                 for handle in info.handles:
                     self.camp_hp.pop(handle, None)
+                info.refresh(self.camp_hp)
                 continue
             self.respawn_round.pop(info.key, None)
             if isinstance(state, game_map.CampGroupRewardAvailable):
                 for handle in info.handles:
                     self.camp_hp[handle] = 0
+                info.refresh(self.camp_hp)
                 continue
+            if info is not self.target:
+                continue   # reading camp health costs fuel; only track the group we fight
             for p in tiles:
                 if cambc.vision.has_camp(p):
                     try:
@@ -90,20 +112,7 @@ class CampPlanner:
                         self.camp_hp[int(camp)] = camp.health()
                     except cambc.Error:
                         pass
-
-    def remaining(self, info):
-        hp = sum(self.camp_hp.get(h, base_hp) for h, base_hp, _ in info.camps)
-        dps = sum(s for h, _, s in info.camps if self.camp_hp.get(h, 1) > 0)
-        return hp, dps
-
-    def score(self, info, dist, now, strength, max_health, capture):
-        if dist >= UNREACHABLE:
-            return 0.0
-        hp, dps = self.remaining(info)
-        clear = hp / (strength * HELPER_FACTOR)
-        danger = dps * clear / max_health * TRIP_TURNS
-        travel = max(dist, self.respawn_round.get(info.key, 0) - now)
-        return info.value / (travel + clear + capture + danger + 1)
+            info.refresh(self.camp_hp)
 
     def choose_target(self):
         """Commit to the best-scoring group; rescore occasionally with hysteresis."""
@@ -119,16 +128,26 @@ class CampPlanner:
         roots = cambc.Bitboard()
         roots.set(me.position())
         field.compute(self.terrain, roots, cambc.Bitboard())
-        strength, max_health = max(1.0, me.strength()), max(1.0, me.max_health())
-        capture = cambc.constants.CAPTURE_TIME
+        # score = value / (travel + clear + capture + danger); danger = expected damage
+        # taken as a fraction of max health, times the turns one retreat-and-return costs.
+        # Inlined: each Python operation costs hundreds of fuel units.
+        inv_dps = 1.0 / (max(1.0, me.strength()) * HELPER_FACTOR)
+        danger_k = TRIP_TURNS / max(1.0, me.max_health())
+        fixed = cambc.constants.CAPTURE_TIME + 1
+        respawn = self.respawn_round
+        get = field.get
         best, best_score, current_score = None, 0.0, 0.0
         for info in self.groups:
-            dist = min(field.get(p) for p in info.spawns)
-            s = self.score(info, dist, now, strength, max_health, capture)
-            if target is not None and info.key == target.key:
-                current_score = s
+            dist = get(info.anchor)
+            if dist >= UNREACHABLE:
+                continue
+            wait = respawn.get(info.key, 0) - now
+            clear = info.hp * inv_dps
+            s = info.value / ((wait if wait > dist else dist) + clear * (1.0 + info.dps * danger_k) + fixed)
             if s > best_score:
                 best, best_score = info, s
+            if info is target:
+                current_score = s
         if target is not None and current_score > 0 and best_score < current_score * SWITCH_MARGIN:
             best = target
         self.target = best

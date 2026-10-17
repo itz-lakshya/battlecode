@@ -1,5 +1,6 @@
 """First playable Alpha Bot: farm camps, tribute gems, and fight in range."""
 import cambc
+import survival
 from camps import CampPlanner
 
 Team, Item = cambc.Team, cambc.ItemType
@@ -60,6 +61,7 @@ class Bot:
     def __init__(self):
         self.chosen_stat = None
         self.planner = CampPlanner()
+        self.retreating = False
 
     def buy_items(self):
         me = cambc.me()
@@ -81,9 +83,24 @@ class Bot:
         at_spawn = cambc.game_map.spawn_region(Team.ALLY).is_set(me.position())
         if at_spawn:
             self.buy_items()
-        if not at_spawn and me.health() < me.max_health() * 0.25:
-            me.recall()
-            return
+            if me.health() < me.max_health():
+                # Spawn heals fully at turn end; stepping off now would forfeit it.
+                self.retreating = False
+                return
+        else:
+            found = survival.threats(me)
+            if survival.should_retreat(me, found):
+                self.retreating = True
+            if self.retreating:
+                # Damage cancels a recall, so leave every threat's range first.
+                if not survival.safe_now(me, found):
+                    survival.retreat_step(me, found, blocked_tiles())
+                if survival.safe_now(me, found) and survival.try_recall(me):
+                    self.retreating = False
+                return
+            if not found and me.health() < me.max_health() * survival.RECALL_SAFE:
+                survival.try_recall(me)
+                return
         for enemy in cambc.vision.champions(Team.ENEMY):
             if attack_if_in_range(enemy):
                 return
