@@ -48,6 +48,8 @@ for f in sorted(glob.glob(os.path.join(D, '*.json'))):
                  total(mine, 'collectedGems'), total(mine, 'earnedGold'), faults, draft, odraft))
     tot['games'] += 1
     tot['wins'] += win
+    if win and gems[mine] >= 1000:
+        tot['win_rounds'] += d['match']['roundsStarted']; tot['fast_wins'] += 1
     tot['gems'] += gems[mine]
     tot['ogems'] += gems[opp]
     tot['deaths'] += total(mine, 'deaths')
@@ -64,3 +66,5 @@ if n:
     print('games=%d wins=%d (%.0f%%) avg gems %.0f vs %.0f, avg deaths %.1f (camp %.1f) vs %.1f, faults %d, fuel exhausted %d, bot errors %d' % (
         n, tot['wins'], 100 * tot['wins'] / n, tot['gems'] / n, tot['ogems'] / n,
         tot['deaths'] / n, tot['campdeaths'] / n, tot['odeaths'] / n, tot['faults'], tot['fuel_exhausted'], tot['errors']))
+    if tot['fast_wins']:
+        print('avg rounds to 1000 gems in wins: %.0f over %d games' % (tot['win_rounds'] / tot['fast_wins'], tot['fast_wins']))
