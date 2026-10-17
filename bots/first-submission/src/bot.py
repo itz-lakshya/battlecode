@@ -1,6 +1,6 @@
 """First playable Alpha Bot: farm camps, tribute gems, and fight in range."""
 import cambc
-from randomness import below
+from camps import CampPlanner
 
 Team, Item = cambc.Team, cambc.ItemType
 
@@ -46,26 +46,20 @@ def attack_if_in_range(target):
     return False
 
 
-def farm_camps():
-    for camp in cambc.vision.camps():
-        if attack_if_in_range(camp):
-            return
-    goals = cambc.Bitboard()
-    visible = cambc.vision.visible_tiles()
-    for group in cambc.game_map.camp_groups():
-        if (not (group.spawn_tiles() & visible).is_empty()
-                and isinstance(group.state(), cambc.game_map.CampGroupRespawning)):
-            continue
-        goals |= group.spawn_tiles()
-    if move_towards_closest(goals):
-        for camp in cambc.vision.camps():
-            if attack_if_in_range(camp):
-                return
+def farm_camps(planner):
+    target = planner.choose_target()
+    if target is None:
+        return
+    if planner.attack_target(target):
+        return
+    if move_towards_closest(planner.goals(target)):
+        planner.attack_target(target)
 
 
 class Bot:
     def __init__(self):
         self.chosen_stat = None
+        self.planner = CampPlanner()
 
     def buy_items(self):
         me = cambc.me()
@@ -79,6 +73,8 @@ class Bot:
 
     def play_turn(self):
         me = cambc.me()
+        if me.is_alive():
+            self.planner.observe()
         if (not me.is_alive() or me.is_recalling() or me.is_submitting_gems() or me.is_teleporting()
                 or (not me.can_move() and not me.can_attack())):
             return
@@ -103,5 +99,5 @@ class Bot:
             if not goals.is_empty():
                 move_towards_closest(goals)
             return
-        farm_camps()
+        farm_camps(self.planner)
         me.set_priority(100)

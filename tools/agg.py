@@ -28,6 +28,8 @@ for f in sorted(glob.glob(os.path.join(D, '*.json'))):
     camp_deaths = sum(1 for e in d['events'] if e['kind'] == 'death'
                       and names.get(e['owner'].get('id')) == mine
                       for x in e['entries'] if x['context'] == 'camp')
+    tot['fuel_exhausted'] += sum(len(e['entries']) for e in d['events'] if e['kind'] == 'fuelExhausted'
+                                 and names.get(e['owner'].get('id')) == mine)
     win = d['match']['outcome'] == mine
     draft = ','.join(c['name'][:4] for c in champs if c['team'] == mine)
     odraft = ','.join(c['name'][:4] for c in champs if c['team'] == opp)
@@ -50,6 +52,6 @@ for r in rows:
     print('%-12s %s %s %5d %5d %5d %4d %4d %4d %3d %5d %5d %3d  %s | %s' % r)
 n = tot['games']
 if n:
-    print('games=%d wins=%d (%.0f%%) avg gems %.0f vs %.0f, avg deaths %.1f (camp %.1f) vs %.1f, faults %d' % (
+    print('games=%d wins=%d (%.0f%%) avg gems %.0f vs %.0f, avg deaths %.1f (camp %.1f) vs %.1f, faults %d, fuel exhausted %d' % (
         n, tot['wins'], 100 * tot['wins'] / n, tot['gems'] / n, tot['ogems'] / n,
-        tot['deaths'] / n, tot['campdeaths'] / n, tot['odeaths'] / n, tot['faults']))
+        tot['deaths'] / n, tot['campdeaths'] / n, tot['odeaths'] / n, tot['faults'], tot['fuel_exhausted']))
