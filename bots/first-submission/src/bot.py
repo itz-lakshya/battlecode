@@ -89,10 +89,13 @@ def fight(me, kit, foes, goals, avoid=None):
 
 
 def enemy_foes(me):
-    """Visible enemy champions within spell range, lowest health first."""
+    """Visible enemy champions within spell range, lowest health first, ignoring enemies on their spawn."""
     out = []
+    enemy_spawn = cambc.game_map.spawn_region(Team.ENEMY)
     tiles = cambc.vision.champion_tiles(Team.ENEMY) & around(me.position(), ENEMY_SCAN)
     for p in tiles.positions():
+        if enemy_spawn.is_set(p):
+            continue  # Enemy on spawn heals fully every turn; fighting them is a fatal distraction
         try:
             enemy = cambc.vision.champion_at(p)
             if enemy.is_alive():
@@ -105,7 +108,7 @@ def enemy_foes(me):
 
 class Bot:
     def __init__(self):
-        self.chosen_stat = None
+        self.monster_shards_bought = 0
         self.planner = CampPlanner()
         self.retreating = False
         self.kit = None
@@ -113,41 +116,76 @@ class Bot:
 
     def buy_items(self):
         me = cambc.me()
-        if self.chosen_stat is None:
-            self.chosen_stat = 0
-        item = (Item.POWER_SHARD_OF_STRENGTH, Item.POWER_SHARD_OF_FOCUS,
-                Item.POWER_SHARD_OF_HEALTH)[self.chosen_stat]
-        count = me.gold_count() // item.cost()
+        gold = me.gold_count()
+        # Buy an altar lock if we don't have one and can afford it (10g)
+        try:
+            has_lock = any(c.kind() == cambc.ConsumableType.ALTAR_LOCK and c.count() > 0 for c in me.consumables())
+            if not has_lock and gold >= 10 and me.can_buy(cambc.ConsumableType.ALTAR_LOCK, 1):
+                me.buy(cambc.ConsumableType.ALTAR_LOCK, 1)
+                gold = me.gold_count()
+        except Exception:
+            pass
+        # Buy 5 Monster Shards of Strength first (combines into Monster Emblem: +10% camp damage)
+        if self.monster_shards_bought < 5:
+            item = Item.MONSTER_SHARD_OF_STRENGTH
+            cost = item.cost()
+            count = min(gold // cost, 5 - self.monster_shards_bought)
+            if count and me.can_buy(item, count):
+                try:
+                    me.buy(item, count)
+                    self.monster_shards_bought += count
+                    gold = me.gold_count()
+                except cambc.Error:
+                    pass
+        # Then buy Power Shards of Strength
+        item = Item.POWER_SHARD_OF_STRENGTH
+        cost = item.cost()
+        count = gold // cost
         if count and me.can_buy(item, count):
-            me.buy(item, count)
+            try:
+                me.buy(item, count)
+            except cambc.Error:
+                pass
 
     def tribute(self, me):
-        """Bank gems at the nearest altar; a locked altar is still usable as a last resort
-        because tributing against a lock attacks it (three hits clear it)."""
+        """Bank gems at an altar; if adjacent to ANY altar, submit gems or attack enemy lock."""
         if self.altars is None:
             r = cambc.constants.SUBMIT_GEMS_RANGE
             self.altars = [(a, around(a, r)) for a in cambc.game_map.altars().positions()]
         origin = me.position()
+        try:
+            for c in me.consumables():
+                if c.kind() == cambc.ConsumableType.ALTAR_LOCK and c.count() > 0:
+                    for altar, _ in self.altars:
+                        if origin.chebyshev_distance(altar) <= 2 and not cambc.vision.has_altar_lock(altar):
+                            c.use(altar)
+                            break
+        except Exception:
+            pass
+        # 1. If already adjacent to an altar, ALWAYS submit/attack!
+        for altar, ring in self.altars:
+            if ring.is_set(origin):
+                try:
+                    me.submit_gems(altar)
+                    return
+                except cambc.Error:
+                    pass
+        # 2. Otherwise path to the closest altar, preferring ones without enemy locks
         open_goals, locked_goals = cambc.Bitboard(), cambc.Bitboard()
         for altar, ring in self.altars:
-            locked = cambc.vision.has_altar_lock(altar)
-            if ring.is_set(origin) and not locked:
-                me.submit_gems(altar)
-                return
-            if locked:
-                locked_goals |= ring
+            if cambc.vision.has_altar_lock(altar):
+                try:
+                    lock = cambc.vision.altar_lock_at(altar)
+                    if lock.is_ally():
+                        open_goals |= ring
+                    else:
+                        locked_goals |= ring
+                except cambc.Error:
+                    locked_goals |= ring
             else:
                 open_goals |= ring
-        if open_goals.is_empty():
-            for altar, ring in self.altars:
-                if ring.is_set(origin):
-                    try:
-                        me.submit_gems(altar)
-                    except cambc.Error:
-                        pass
-                    return
-            open_goals = locked_goals
-        move_towards_closest(open_goals, self.kit)
+        goals = open_goals if not open_goals.is_empty() else locked_goals
+        move_towards_closest(goals, self.kit)
 
     def play_turn(self):
         me = cambc.me()
@@ -165,8 +203,9 @@ class Bot:
         me.set_priority(100)
         at_spawn = cambc.game_map.spawn_region(Team.ALLY).is_set(me.position())
         found = []
+        # Buy items: at spawn, or anywhere in the field for Tavi
+        self.buy_items()
         if at_spawn:
-            self.buy_items()
             if me.health() < me.max_health():
                 # Spawn heals fully at turn end; stepping off now would forfeit it.
                 self.retreating = False
@@ -188,12 +227,27 @@ class Bot:
                 return
         kit.support(me, bool(found))
         enemies = enemy_foes(me)
-        if enemies and fight(me, kit, enemies, None):
-            return
-        if me.gem_count() > 0:
-            self.tribute(me)
-            return
+        if enemies:
+            # Close the gap on enemy champions: approach within attack range
+            enemy_pos = enemies[0][1]
+            enemy_goals = around(enemy_pos, me.attack_range())
+            if fight(me, kit, enemies, enemy_goals):
+                return
+        gems = me.gem_count()
+        if gems > 0:
+            if self.altars is None:
+                r = cambc.constants.SUBMIT_GEMS_RANGE
+                self.altars = [(a, around(a, r)) for a in cambc.game_map.altars().positions()]
+            origin = me.position()
+            close_to_altar = any(origin.chebyshev_distance(a) <= 8 for a, _ in self.altars)
+            winning = cambc.global_submitted_gems(Team.ALLY) + gems >= 1000
+            # Bank if carrying a good batch, already near an altar, or about to win
+            if gems >= 25 or close_to_altar or winning:
+                self.tribute(me)
+                return
         target = self.planner.choose_target(kit.kite_dps(me))
         if target is None:
+            if gems > 0:
+                self.tribute(me)
             return
         fight(me, kit, self.planner.foes(target), self.planner.goals(target), self.planner.avoid(target))
