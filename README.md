@@ -1,5 +1,5 @@
 # ⚡ PROJECT AETHELGUARD / ALPHA-V4
-### *An autonomous strategy agent for Cambridge Battlecode 2026a, focused on efficient gem extraction, risk-aware camp selection, ranged kiting, and reliable gem tributing.*
+### *An autonomous strategy agent for Cambridge Battlecode 2026, focused on efficient gem extraction, risk-aware camp selection, ranged kiting, and reliable gem tributing.*
 
 
 [![Engine](https://img.shields.io/badge/Engine-CAMBC%202026-blueviolet.svg)](#)
